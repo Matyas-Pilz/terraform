@@ -1,16 +1,16 @@
+local S = core.get_translator("terraform")
 -- Privilege
-minetest.register_privilege("terraform", "Ability to use terraform tools")
+minetest.register_privilege("terraform", S("Ability to use terraform tools"))
 
 local function privileged(player, f, verbose)
 	if player ~= nil and player:get_player_name() ~= "" then
 		if minetest.check_player_privs(player, "terraform") then
 			return f()
 		elseif verbose then
-			minetest.chat_send_player(player:get_player_name(), "You need terraform privilege to perform the action")
+			minetest.chat_send_player(player:get_player_name(), S("You need terraform privilege to perform the action"))
 		end
 	end
 end
-
 -- Settings
 local settings = {
 	undo_history_depth = minetest.settings:get("terraform.undo_history_depth") and tonumber(minetest.settings:get("terraform.undo_history_depth")) or 100,
@@ -83,55 +83,14 @@ minetest.register_on_leaveplayer(function(player)
 end)
 
 -- Quirks for backward compatibility
-local quirks = {
+quirks = {
 	is_53_plus = minetest.features.object_step_has_moveresult
 }
-
--- Per-player behavior settings and flags
-local player_settings = {
-	flags = {
-		undo_on_aux1 = { id = "uaux1", default = true }
-	}
-}
-function player_settings.get_flag(player, name)
-	return player:get_meta():get_int("terraform:"..player_settings.flags[name].id, player_settings.flags[name].default and 1 or 0 ) == 1
-end
-function player_settings.set_flag(player, name, value)
-	return player:get_meta():set_int("terraform:"..player_settings.flags[name].id, value and 1 or 0 )
-end
-function player_settings.toggle_flag(player, name)
-	local new_value = not player_settings.get_flag(player, name)
-	player_settings.set_flag(player, name, new_value)
-	return new_value
-end
-
-minetest.register_chatcommand("tf", {
-	params = "toggle <flag>",
-	description = "Toggle a behavior flag.\n"..
-		"Supported flags:\n"..
-		"  undo_on_aux1 - enable undo when using a tool with aux1",
-	privs = { terraform = true },
-	func = function(name, param)
-		local args = {}
-		for arg in param:gmatch("[^ ]+") do
-			table.insert(args, arg)
-		end
-
-		if args[1] ~= "toggle" then return false end
-		if player_settings.flags[args[2]] == nil then return false, "Unrecognized flag "..args[2] end
-
-		local new_value = player_settings.toggle_flag(minetest.get_player_by_name(name), args[2])
-		return true, new_value and "Enabled" or "Disabled"
-	end
-})
 
 -- public module API
 terraform = {
 	_tools = {},
 	_history = history,
-
-	-- Per-player state of the tool configuration form
-	_latest_form = {},
 
 	-- Per-player flags for skipping light updates
 	skip_light = {},
@@ -164,7 +123,7 @@ terraform = {
 			end,
 			on_place = function(itemstack, player, target)
 				return privileged(player, function()
-					if player:get_player_control().aux1 and player_settings.get_flag(player, "undo_on_aux1") then
+					if player:get_player_control().aux1 then
 						history:undo(player)
 					else
 						spec:execute(player, target, itemstack:get_meta())
@@ -182,23 +141,17 @@ terraform = {
 		end
 
 		local itemstack = player:get_wielded_item()
-		local form = { id = "terraform:props:"..tool_name..math.random(1,100000), tool_name = tool_name}
-		self._latest_form[player:get_player_name()] = form
+		self._latest_form = { id = "terraform:props:"..tool_name..math.random(1,100000), tool_name = tool_name}
 		local formspec = self._tools[tool_name]:render_config(player, itemstack:get_meta())
 		if quirks.is_53_plus then
-			minetest.show_formspec(player:get_player_name(), form.id, formspec)
+			minetest.show_formspec(player:get_player_name(), self._latest_form.id, formspec)
 		else
 			self.blocked = true
 			minetest.after(0.25, function()
-				minetest.show_formspec(player:get_player_name(), form.id, formspec)
+				minetest.show_formspec(player:get_player_name(), self._latest_form.id, formspec)
 				self.blocked = false
 			end)
 		end
-	end,
-
-	forget = function(self, player)
-		self._latest_form[player:get_player_name()] = nil
-		minetest.remove_detached_inventory("terraform."..player:get_player_name())
 	end,
 
 	get_inventory = function(player)
@@ -236,9 +189,8 @@ terraform = {
 -- Handle input from forms
 minetest.register_on_player_receive_fields(function(player, formname, fields)
 	privileged(player, function()
-		local form = terraform._latest_form[player:get_player_name()]
-		if form ~= nil and formname == form.id then
-			local tool_name = form.tool_name
+		if terraform._latest_form and formname == terraform._latest_form.id then
+			local tool_name = terraform._latest_form.tool_name
 			local tool = terraform._tools[tool_name]
 			if not tool.config_input then
 				return
@@ -255,7 +207,7 @@ minetest.register_on_player_receive_fields(function(player, formname, fields)
 			player:set_wielded_item(itemstack)
 
 			if fields.quit then
-				terraform._latest_form[player:get_player_name()] = nil
+				terraform._latest_form = nil
 				return
 			end
 
@@ -267,7 +219,7 @@ minetest.register_on_player_receive_fields(function(player, formname, fields)
 end)
 
 minetest.register_on_leaveplayer(function(player)
-	terraform:forget(player)
+	minetest.remove_detached_inventory("terraform."..player:get_player_name())
 end)
 
 -- Tools
@@ -993,30 +945,45 @@ local light = {
 			end
 		end
 		self.players[player:get_player_name()] = nil
-		terraform.skip_light[player:get_player_name()] = nil
+		terraform.skip_light[player:get_player_name()] = false
 		self:tick()
 	end,
 	tick = function(self)
-		for name,pl in pairs(self.players) do
-			local origin = vector.floor(pl.player:get_pos())
-			local box = self:light_bounds(origin)
-			local minp = box.min
-			local maxp = box.max
-			pl.c = (pl.c or 0) + 1
+for name, pl in pairs(self.players) do
+	local origin = vector.floor(pl.player:get_pos())
+	local box = self:light_bounds(origin)
+	pl.c = (pl.c or 0) + 1
 
-			if pl.last_pos ~= nil then
-				if vector.distance(origin, pl.last_pos) < self.size * self.pitch_rate then
-					break -- skip the player, not enough movement
-				end
-				local old_box = self:light_bounds(pl.last_pos)
-				local b1, b2, b3 = box_diff(old_box, box)
-				table.insert(self.queues.dark, b1)
-				table.insert(self.queues.dark, b2)
-				table.insert(self.queues.dark, b3)
-			end
-			table.insert(self.queues.light, box)
-			pl.last_pos = origin
+	if pl.last_pos ~= nil then
+		local distance = vector.distance(origin, pl.last_pos)
+		if distance > 300 then  -- nebo jiná hranice podle tvých testů
+			minetest.chat_send_player(name,
+				"[Terraform] "..S("Light tool disabled due to rapid movement").." (" ..
+				math.floor(distance) .. " nodes).")
+
+			-- Vypnout terraform light bezpečně
+			pl.player:override_day_night_ratio(nil)
+			self:remove_player(pl.player)
+
+			goto continue  -- přeskočí zbytek pro tohoto hráče
 		end
+
+		if distance < self.size * self.pitch_rate then
+			goto continue -- pohyb příliš malý, přeskočíme
+		end
+
+		local old_box = self:light_bounds(pl.last_pos)
+		local b1, b2, b3 = box_diff(old_box, box)
+		table.insert(self.queues.dark, b1)
+		table.insert(self.queues.dark, b2)
+		table.insert(self.queues.dark, b3)
+	end
+
+	table.insert(self.queues.light, box)
+	pl.last_pos = origin
+
+	::continue::
+end
 
 		-- process queues
 		while #self.queues.dark > 0 do
