@@ -2,3 +2,7 @@ List of contributors by the time of first contribution
 
 Dmitry Kostenko <codeforsmile@gmail.com>
 
+Repaired bug after teleport for long distance with enabled "terraform:light" on server with high number of loaded mods:
+MatyasP with help by ChatGPT
+Translation support and translation to Czech language:
+MatyasP
